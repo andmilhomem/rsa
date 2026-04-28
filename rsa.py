@@ -98,7 +98,7 @@ def gera_chaves():
 def cifra_decifra(base, expoente, n):
     return pow(base, expoente, n)
 
-def empacota(m, n): # De acordo com OAEP
+def empacota_oaep(m, n):
     # Calcula tamanho máximo da mensagem a partir de 'n'
     tam_n_em_bytes = (n.bit_length() + 7) // 8 
     tam_max_m_em_bytes = tam_n_em_bytes - 2 - (2 * TAM_HASH_BYTES) # -1 (0x00 na EM porque m < n), -1 (0x01 no DB como delimitador), -TAM_HASH_BYTES (hash do DB), -TAM_HASH_BYTES (masked_seed de EM)
@@ -131,7 +131,7 @@ def empacota(m, n): # De acordo com OAEP
     pacote_final = int.from_bytes(b"\x00" + semente_mascarada + pacote_mascarado,"big") 
     return pacote_final, ""
 
-def desempacota(pacote):
+def desempacota_oaep(pacote):
     # Decompõe pacote
     if pacote[0] != 0x00:
         return -1, "início diferente de 0x00"
@@ -159,27 +159,124 @@ def desempacota(pacote):
     for b in padding: # Checa padding
         if b != 0x00:
             return -1, "padding inválido"
-    return 0, m_desempacotada
+    return 0, m_desempacotada.decode("utf-8")
+
+def empacota_pss(m, n):
+    # Calcula tamanho máximo da assinatura (encoded message) a partir de 'n'
+    tam_max_a_bits = n.bit_length() - 1
+    tam_max_a_bytes = (tam_max_a_bits + 7) // 8 
+
+    # Checa se tamanho máximo da assinatura (encoded message) comporta os elementos obrigatórios (0x01 + salt no db; H + 0xbc na em)
+    if tam_max_a_bytes < 2*TAM_HASH_BYTES + 2:
+        return -1
+
+    # Gera m_linha
+    padding1 = b"\x00" * 8
+    h = hashlib.sha3_256(m).digest() #mHash
+    salt = secrets.token_bytes(32)
+    m_linha = padding1 + h + salt
+
+    # Gera padding de zeros do pacote
+    tam_padding_pacote_bytes = tam_max_a_bytes - ( 2 * TAM_HASH_BYTES) - 2  # em menos (H + 0xbc) menos (0x01 + salt)
+    padding_pacote = b"\x00" * tam_padding_pacote_bytes
+
+    # Gera pacote (data block)
+    pacote = padding_pacote + b"\x01" + salt
+
+    # Gera hash final (H)
+    h_final = hashlib.sha3_256(m_linha).digest()
+
+    # Mascara pacote (gera masked data block)
+    mascara_pacote = aplica_mgf1(h_final, len(pacote))
+    pacote_mascarado = xor_bytes(pacote, mascara_pacote)
+
+    # Zera os primeiros bits para garantir que 'em' não exceda 'n'
+    bits_sobressalentes = (8 * tam_max_a_bytes) - tam_max_a_bits
+    if bits_sobressalentes > 0:
+        mascara =  (0xFF >> bits_sobressalentes)
+        ba = bytearray(pacote_mascarado)
+        ba[0] &= mascara
+        pacote_mascarado_ajustado = bytes(ba)
+    else:
+        pacote_mascarado_ajustado = pacote_mascarado
+
+    # Compõe pacote final (gera encoded message) e converte para int
+    pacote_final = int.from_bytes(pacote_mascarado_ajustado + h_final + b"\xbc","big") 
+
+    return pacote_final
+
+def desempacota_pss(pacote, m, n):
+    # Calcula tamanho máximo da assinatura (encoded message) a partir de 'n'
+    tam_max_a_bits = n.bit_length() - 1
+    tam_max_a_bytes = (tam_max_a_bits + 7) // 8 
+
+    # Checa se os bits sobressalentes estão zerados
+    bits_sobressalentes = (8 * tam_max_a_bytes) - tam_max_a_bits
+    if bits_sobressalentes > 0:
+        mascara = 0xFF << (8 - bits_sobressalentes) & 0xFF
+        if (pacote[0] & mascara) != 0:
+            return -1, "bits sobressalentes não zerados"
+
+    # Decompõe pacote
+    if pacote[-1] != 0xbc:
+        return -1, "fim diferente de 0xbc"
+    pos_h_final = len(pacote) - TAM_HASH_BYTES - 1
+    pacote_mascarado = pacote[:pos_h_final]
+    h_final_recebido = pacote[pos_h_final: pos_h_final + TAM_HASH_BYTES]
+
+    # Desmascara pacote
+    h = hashlib.sha3_256(m).digest()
+    mascara_pacote = aplica_mgf1(h_final_recebido, len (pacote) - TAM_HASH_BYTES - 1)
+    pacote_desmascarado = xor_bytes(pacote_mascarado, mascara_pacote)
+
+    # Zera bits sobressalentes
+    if bits_sobressalentes > 0:
+        mascara = (0xFF >> bits_sobressalentes)
+        ba = bytearray(pacote_desmascarado)
+        ba[0] &= mascara
+        pacote_desmascarado_ajustado = bytes(ba)
+    else:
+        pacote_desmascarado_ajustado = pacote_mascarado
+    
+    # Checa se padding está zerado
+    tam_padding_pacote_bytes = tam_max_a_bytes - ( 2 * TAM_HASH_BYTES) - 2  # em menos (H + 0xbc) menos (0x01 + salt)
+    padding = pacote_desmascarado_ajustado[:tam_padding_pacote_bytes]
+    for b in padding: # Checa padding
+        if b != 0x00:
+            return -1, "padding inválido"
+    
+    # Checa se separador está correto
+    if pacote_desmascarado_ajustado[tam_padding_pacote_bytes] != 1:
+        return -1, "separador não localizado"
+    
+    # Calcula h_final
+    salt = pacote_desmascarado_ajustado[tam_padding_pacote_bytes+1:]
+    h = hashlib.sha3_256(m).digest() #mHash
+    m_linha = b"\x00" * 8 + h + salt
+    h_final = hashlib.sha3_256(m_linha).digest()
+
+    # Verifica assinatura
+    return 0, h_final_recebido == h_final
 
 def assina_mensagem(m, n, d):
-    # Gera e empacota hash
-    h = hashlib.sha3_256(m).digest()
-    h_empacotado, _ = empacota(h, n)
+    # Gera e empacota assinatura
+    a = empacota_pss(m, n)
+    if a == -1: return a, "Erro ao assinar!"
 
-    # Cifra hash
-    h_cifrado = cifra_decifra(h_empacotado, d, n)
-    h_cifrado_base64 = int_para_base64(h_cifrado)
+    # Cifra assinatura
+    a_cifrada = cifra_decifra(a, d, n)
+    a_cifrada_base64 = int_para_base64(a_cifrada)
 
     # Compõe mensagem e assinatura
     m_assinada = json.dumps({
         "mensagem": m.decode("utf-8"),
-        "assinatura": h_cifrado_base64.decode('utf-8')
+        "assinatura": a_cifrada_base64.decode('utf-8')
     })
     
     # Converte mensagem para base64
     m_assinada_base64 = base64.b64encode(m_assinada.encode("utf-8"))
 
-    return m_assinada_base64, h_cifrado_base64
+    return 0, m_assinada_base64.decode("utf-8")
 
 
 while True:
@@ -220,7 +317,7 @@ while True:
             m = input("> ").encode("utf-8")
 
             # Empacota 'm'
-            pacote, informacao = empacota(m, n_B)
+            pacote, informacao = empacota_oaep(m, n_B)
             if pacote == -1:
                 print(informacao)
                 continue
@@ -246,13 +343,13 @@ while True:
             pacote_decifrado_int = cifra_decifra(c, d_B, n_B)
             tam_n_em_bytes = (n_B.bit_length() + 7) // 8 
             pacote_decifrado_bytes = pacote_decifrado_int.to_bytes(tam_n_em_bytes,"big")
-            resultado, informacao = desempacota(pacote_decifrado_bytes)
+            resultado, informacao = desempacota_oaep(pacote_decifrado_bytes)
 
             if resultado == -1:
                 print(f"Mensagem corrompida ({informacao})!")
                 continue
             
-            print(f"Mensagem decifrada com sucesso:\n{informacao.decode("utf-8")}")
+            print(f"Mensagem decifrada com sucesso:\n{informacao}")
 
         case "4": # Assina mensagem
             # Obtém 'n'
@@ -268,10 +365,9 @@ while True:
             m = input("> ").encode("utf-8")
 
             # Assina mensagem
-            m_assinada_base64, assinatura_base64 = assina_mensagem(m, n_A, d_A)
-
-            print(f"Mensagem assinada com sucesso: {m_assinada_base64.decode('utf-8')}")
-            print(f"Assinatura: {assinatura_base64.decode('utf-8')}")
+            resultado, informacao = assina_mensagem(m, n_A, d_A)
+            if resultado == -1: print(informacao)
+            else: print(f"Mensagem assinada com sucesso:\n{informacao}")
 
         case "5": # Verifica assinatura
             # Obtém 'n'
@@ -283,7 +379,7 @@ while True:
             e_A = base64_para_int(input("> ")) # Adicionar validação de input
 
             # Obtém e decompõe a mensagem
-            print(f"Informe a mensagem:")
+            print(f"Informe a mensagem (em base64):")
             m_recebida = base64.b64decode(input("> ")).decode("utf-8")
             m_recebida_json = json.loads(m_recebida)
             m_recebida_bytes = m_recebida_json["mensagem"].encode("utf-8")
@@ -296,21 +392,17 @@ while True:
             # Desempacota assinatura recebida
             tam_n_em_bytes = (n_A.bit_length() + 7) // 8
             a_decifrada_bytes = a_decifrada_int.to_bytes(tam_n_em_bytes,"big")
-            resultado, informacao = desempacota(a_decifrada_bytes)
+            resultado, informacao = desempacota_pss(a_decifrada_bytes, m_recebida_bytes, n_A)
 
             if resultado == -1:
                 print(f"Assinatura corrompida ({informacao})!")
                 continue
-            
-            a_desempacotada_bytes = informacao
-
-            # Verifica validade da assinatura
-            h_bytes = hashlib.sha3_256(m_recebida_bytes).digest()
-            if h_bytes == a_desempacotada_bytes:
+            if informacao == True:
                 print("Integridade confirmada da seguinte mensagem:")
                 print(m_recebida_bytes.decode("utf-8"))
             else:
                 print("Assinatura inválida!")
+
         case _:
             "\n Opção inválida. Tente novamente.\n"
 
