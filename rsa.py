@@ -3,15 +3,21 @@ import math
 import base64
 import hashlib
 import json
-import random # Checar necessidade ao final
+import random
+import time # Para testes
 
 # Parâmetros:
 TAM_HASH_BYTES = 32 # SHA-256
 LABEL_HASH = b"" # Usada para gerar hash de início do pacote OAEP
 TAM_P_Q_BITS = 1024 # O teto para n (e, portanto, para m) é o dobro desse valor
 E_CANDIDATO = 65537
+TESTE = False # Alterar para ativar testes
+ITERACOES_TESTE_PRIMO = 100
+ITERACOES_TESTE_E = 10000
+ITERACOES_TESTE_D = 100
+ITERACOES_TESTE_ENC_DEC = 10000
 
-#Funções auxiliares:
+# Funções auxiliares:
 def int_para_base64(i):
     return base64.b64encode(i.to_bytes((i.bit_length() + 7) // 8, "big"))
 
@@ -22,11 +28,6 @@ def xor_bytes(a, b):
     return bytes(x ^ y for x, y in zip(a, b))
 
 def aplica_miller_rebin(n):
-    #############
-    #IMPLEMENTAR#
-    #############
-    # return True or False
-
     k=40
     # casos básicos
     if n < 2:
@@ -118,6 +119,13 @@ def desformata_chave(chave):
 
 # Funções principais:
 def gera_chaves():
+    if TESTE == True:
+        inicio = time.process_time_ns()
+        for i in range(ITERACOES_TESTE_PRIMO):
+            p = gera_primo(TAM_P_Q_BITS)
+        fim = time.process_time_ns()
+        print(f"\nTempo de {ITERACOES_TESTE_PRIMO} gerações de primos ({fim-inicio} ns):")
+
     p = gera_primo(TAM_P_Q_BITS)
     q = gera_primo(TAM_P_Q_BITS)
     n = p*q
@@ -137,7 +145,7 @@ def empacota_oaep(m, n):
     # Checa tamanho de 'm'
     tam_m = len(m)
     if tam_m > tam_max_m_em_bytes:
-        return -1, f"O tamanho da mensagem ({tam_m} bytes) excedeu o limite máximo ({tam_max_m_em_bytes} bytes)!"
+        return -1, f"\nO tamanho da mensagem ({tam_m} bytes) excedeu o limite máximo ({tam_max_m_em_bytes} bytes)!"
     
     # Gera padding de zeros
     tam_padding = tam_max_m_em_bytes - tam_m
@@ -204,7 +212,7 @@ def empacota_pss(m, n):
     # Gera m_linha
     padding1 = b"\x00" * 8
     h = hashlib.sha3_256(m).digest() #mHash
-    salt = secrets.token_bytes(32)
+    salt = secrets.token_bytes(TAM_HASH_BYTES)
     m_linha = padding1 + h + salt
 
     # Gera padding de zeros do pacote
@@ -293,9 +301,21 @@ def assina_mensagem(m, n, d):
     # Gera e empacota assinatura
     a = empacota_pss(m, n)
     if a == -1: return a, "Erro ao assinar!"
+    if TESTE == True:
+        inicio = time.process_time_ns()
+        for i in range(ITERACOES_TESTE_ENC_DEC):
+            empacota_pss(m, n)
+        fim = time.process_time_ns()
+        print(f"\nTempo de {ITERACOES_TESTE_ENC_DEC} codificações PSS ({fim-inicio} ns):")
 
     # Cifra assinatura
     a_cifrada = cifra_decifra(a, d, n)
+    if TESTE == True:
+        inicio = time.process_time_ns()
+        for i in range(ITERACOES_TESTE_D):
+            cifra_decifra(a, d, n)
+        fim = time.process_time_ns()
+        print(f"\nTempo de {ITERACOES_TESTE_D} cifragens RSA ({fim-inicio} ns):")
     a_cifrada_base64 = int_para_base64(a_cifrada)
 
     # Compõe mensagem e assinatura
@@ -331,95 +351,119 @@ while True:
                     chave_pública_B = formata_chave(n_B, e_B, "publ")
                     chave_privada_B = formata_chave(n_B, d_B, "priv")
                 
-                    print("\n========== CHAVE PÚBLICA DE A ============\n")
+                    print("\n============ CHAVE PÚBLICA DE A ===============\n")
                     print(chave_pública_A)
-                    print("\n========== CHAVE PRIVADA DE A ============\n")
+                    print("\n============ CHAVE PRIVADA DE A ===============\n")
                     print(chave_privada_A)
-                    print("\n========== CHAVE PÚBLICA DE B ============\n")
+                    print("\n============ CHAVE PÚBLICA DE B ===============\n")
                     print(chave_pública_B)
-                    print("\n========== CHAVE PRIVADA DE B ============\n")
+                    print("\n============ CHAVE PRIVADA DE B ===============\n")
                     print(chave_privada_B)
-                    print("\n==========================================\n")
+                    print("\n===============================================\n")
                 except:
-                    print("Erro ao gerar chaves!")
+                    print("\nErro ao gerar chaves!")
 
             case "2": # Cifra mensagem
                 # Obtém 'chave'
-                print("Informe a chave pública de B:") 
+                print("\nInforme a chave pública de B:") 
                 try:
                     n_B, e_B = desformata_chave(input("> "))
                 except:
-                    print("Erro ao processar chave!")
+                    print("\nErro ao processar chave!")
                     continue
 
                 # Obtém 'm'
-                print(f"Informe a mensagem:")
+                print(f"\nInforme a mensagem:")
                 m = input("> ").encode("utf-8")
 
                 # Empacota 'm'
                 pacote, informacao = empacota_oaep(m, n_B)
+                if TESTE == True:
+                    inicio = time.process_time_ns()
+                    for i in range(ITERACOES_TESTE_ENC_DEC):
+                        empacota_oaep(m, n_B)
+                    fim = time.process_time_ns()
+                    print(f"\nTempo de {ITERACOES_TESTE_ENC_DEC} codificações OAEP ({fim-inicio} ns):")
                 if pacote == -1:
                     print(informacao)
                     continue
 
                 # Cifra pacote (RSA)
                 c = cifra_decifra(pacote, e_B, n_B)
-                print(f"Mensagem cifrada com sucesso:\n{int_para_base64(c).decode('utf-8')}")
+                print(f"\nMensagem cifrada com sucesso:\n{int_para_base64(c).decode('utf-8')}")
+                if TESTE == True:
+                    inicio = time.process_time_ns()
+                    for i in range(ITERACOES_TESTE_E):
+                        cifra_decifra(pacote, e_B, n_B)
+                    fim = time.process_time_ns()
+                    print(f"\nTempo de {ITERACOES_TESTE_E} cifragens RSA ({fim-inicio} ns):")
 
             case "3": # Decifra mensagem
                 # Obtém 'chave'
-                print("Informe a chave privada de B:") 
+                print("\nInforme a chave privada de B:") 
                 try:
                     n_B, d_B = desformata_chave(input("> "))
                 except:
-                    print("Erro ao processar chave!")
+                    print("\nErro ao processar chave!")
                     continue
 
                 # Obtém mensagem cifrada
-                print(f"Informe a mensagem cifrada:")
+                print(f"\nInforme a mensagem cifrada (em base64):")
                 c = base64_para_int(input("> "))
 
                 # Decifra mensagem
                 pacote_decifrado_int = cifra_decifra(c, d_B, n_B)
+                if TESTE == True:
+                    inicio = time.process_time_ns()
+                    for i in range(ITERACOES_TESTE_D):
+                        cifra_decifra(c, d_B, n_B)
+                    fim = time.process_time_ns()
+                    print(f"\nTempo de {ITERACOES_TESTE_D} decifragens RSA ({fim-inicio} ns):")
                 tam_n_em_bytes = (n_B.bit_length() + 7) // 8 
                 pacote_decifrado_bytes = pacote_decifrado_int.to_bytes(tam_n_em_bytes,"big")
                 resultado, informacao = desempacota_oaep(pacote_decifrado_bytes)
+                if TESTE == True:
+                    inicio = time.process_time_ns()
+                    for i in range(ITERACOES_TESTE_ENC_DEC):
+                        desempacota_oaep(pacote_decifrado_bytes)
+                    fim = time.process_time_ns()
+                    print(f"\nTempo de {ITERACOES_TESTE_ENC_DEC} decodificações OAEP ({fim-inicio} ns):")
 
                 if resultado == -1:
-                    print(f"Mensagem corrompida ({informacao})!")
+                    print(f"\nMensagem corrompida ({informacao})!")
                     continue
                 
-                print(f"Mensagem decifrada com sucesso:\n{informacao}")
+                print(f"\nMensagem decifrada com sucesso:\n{informacao}")
 
             case "4": # Assina mensagem
                 # Obtém 'chave'
-                print("Informe a chave privada de A:") 
+                print("\nInforme a chave privada de A:") 
                 try:
                     n_A, d_A = desformata_chave(input("> "))
                 except:
-                    print("Erro ao processar chave!")
+                    print("\nErro ao processar chave!")
                     continue
 
                 # Obtém 'm'
-                print(f"Informe a mensagem:")
+                print(f"\nInforme a mensagem:")
                 m = input("> ").encode("utf-8")
 
                 # Assina mensagem
                 resultado, informacao = assina_mensagem(m, n_A, d_A)
                 if resultado == -1: print(informacao)
-                else: print(f"Mensagem assinada com sucesso:\n{informacao}")
+                else: print(f"\nMensagem assinada com sucesso:\n{informacao}")
 
             case "5": # Verifica assinatura
                 # Obtém 'chave'
-                print("Informe a chave pública de A:") 
+                print("\nInforme a chave pública de A:") 
                 try:
                     n_A, e_A = desformata_chave(input("> "))
                 except:
-                    print("Erro ao processar chave!")
+                    print("\nErro ao processar chave!")
                     continue
 
                 # Obtém e decompõe a mensagem
-                print(f"Informe a mensagem (em base64):")
+                print(f"\nInforme a mensagem assinada (em base 64):")
                 m_recebida = base64.b64decode(input("> ")).decode("utf-8")
                 m_recebida_json = json.loads(m_recebida)
                 m_recebida_bytes = m_recebida_json["mensagem"].encode("utf-8")
@@ -428,20 +472,32 @@ while True:
                 # Decifra assinatura recebida
                 a_recebida_int = base64_para_int(a_recebida_base64)
                 a_decifrada_int = cifra_decifra(a_recebida_int, e_A, n_A)
+                if TESTE == True:
+                    inicio = time.process_time_ns()
+                    for i in range(ITERACOES_TESTE_E):
+                        cifra_decifra(a_recebida_int, e_A, n_A)
+                    fim = time.process_time_ns()
+                    print(f"\nTempo de {ITERACOES_TESTE_E} decifragens RSA ({fim-inicio} ns):")
 
                 # Desempacota assinatura recebida
                 tam_n_em_bytes = (n_A.bit_length() + 7) // 8
                 a_decifrada_bytes = a_decifrada_int.to_bytes(tam_n_em_bytes,"big")
                 resultado, informacao = desempacota_pss(a_decifrada_bytes, m_recebida_bytes, n_A)
+                if TESTE == True:
+                    inicio = time.process_time_ns()
+                    for i in range(ITERACOES_TESTE_ENC_DEC):
+                        desempacota_pss(a_decifrada_bytes, m_recebida_bytes, n_A)
+                    fim = time.process_time_ns()
+                    print(f"\nTempo de {ITERACOES_TESTE_ENC_DEC} decodificações PSS ({fim-inicio} ns):")
 
                 if resultado == -1:
-                    print(f"Assinatura corrompida ({informacao})!")
+                    print(f"\nAssinatura corrompida ({informacao})!")
                     continue
                 if informacao == True:
-                    print("Integridade confirmada da seguinte mensagem:")
+                    print("\nIntegridade confirmada da seguinte mensagem:")
                     print(m_recebida_bytes.decode("utf-8"))
                 else:
-                    print("Assinatura inválida!")
+                    print("\nAssinatura inválida!")
 
             case _:
                 print("\n Opção inválida. Tente novamente.\n")
