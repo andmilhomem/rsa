@@ -404,12 +404,16 @@ while True:
                 try:
                     n_B, d_B = desformata_chave(input("> "))
                 except:
-                    print("\nErro ao processar chave!")
+                    print("\nErro ao processar chave (formato inválido)!")
                     continue
 
                 # Obtém mensagem cifrada
                 print(f"\nInforme a mensagem cifrada (em base64):")
-                c = base64_para_int(input("> "))
+                try:
+                    c = base64_para_int(input("> "))
+                except:
+                    print("\nErro ao processar mensagem (formato inválido)!")
+                    continue
 
                 # Decifra mensagem
                 pacote_decifrado_int = cifra_decifra(c, d_B, n_B)
@@ -461,23 +465,27 @@ while True:
                 except:
                     print("\nErro ao processar chave!")
                     continue
-
-                # Obtém e decompõe a mensagem
-                print(f"\nInforme a mensagem assinada (em base 64):")
-                m_recebida = base64.b64decode(input("> ")).decode("utf-8")
-                m_recebida_json = json.loads(m_recebida)
-                m_recebida_bytes = m_recebida_json["mensagem"].encode("utf-8")
-                a_recebida_base64 = m_recebida_json["assinatura"]
                 
-                # Decifra assinatura recebida
-                a_recebida_int = base64_para_int(a_recebida_base64)
-                a_decifrada_int = cifra_decifra(a_recebida_int, e_A, n_A)
-                if TESTE == True:
-                    inicio = time.process_time_ns()
-                    for i in range(ITERACOES_TESTE_E):
-                        cifra_decifra(a_recebida_int, e_A, n_A)
-                    fim = time.process_time_ns()
-                    print(f"\nTempo de {ITERACOES_TESTE_E} decifragens RSA ({fim-inicio} ns):")
+                try:
+                    # Obtém e decompõe a mensagem
+                    print(f"\nInforme a mensagem assinada (em base 64):")
+                    m_recebida = base64.b64decode(input("> ")).decode("utf-8")
+                    m_recebida_json = json.loads(m_recebida)
+                    m_recebida_bytes = m_recebida_json["mensagem"].encode("utf-8")
+                    a_recebida_base64 = m_recebida_json["assinatura"]
+                    
+                    # Decifra assinatura recebida
+                    a_recebida_int = base64_para_int(a_recebida_base64)
+                    a_decifrada_int = cifra_decifra(a_recebida_int, e_A, n_A)
+                    if TESTE == True:
+                        inicio = time.process_time_ns()
+                        for i in range(ITERACOES_TESTE_E):
+                            cifra_decifra(a_recebida_int, e_A, n_A)
+                        fim = time.process_time_ns()
+                        print(f"\nTempo de {ITERACOES_TESTE_E} decifragens RSA ({fim-inicio} ns):")
+                except:
+                    print("\nErro ao processar mensagem assinada (formato inválido)!")
+                    continue
 
                 # Desempacota assinatura recebida
                 tam_n_em_bytes = (n_A.bit_length() + 7) // 8
@@ -501,7 +509,8 @@ while True:
 
             case _:
                 print("\n Opção inválida. Tente novamente.\n")
-    except:
-        exit()
+    except Exception as e:
+        print("Um erro inesperado ocorreu: ", e)
+
 
 
